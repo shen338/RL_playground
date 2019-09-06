@@ -1,6 +1,5 @@
 import sys
 sys.path.append("..")
-from network.body import MLPBody
 from utils import logz
 import tensorflow as tf 
 import numpy as np
@@ -101,6 +100,7 @@ class DQNAgent(object):
         self.session = session
         self.exploration = exploration
         self.rew_file = str(uuid.uuid4()) + '.pkl' if rew_file is None else rew_file
+        self.double_q = double_q
 
         ###############
         # BUILD MODEL #
@@ -157,8 +157,18 @@ class DQNAgent(object):
         self.target_all_action = q_func(obs_tp1_float, self.num_actions, scope="target_q_func", reuse=False)
         q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='q_func')
         target_q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='target_q_func')
-        
-        target_q_func = gamma*tf.reduce_max(self.target_all_action, axis=1)*(1 - self.done_mask_ph) + self.rew_t_ph
+
+        # if using Double Q learning, the best action is determined by inner network but the Q_next is determined by target network
+        # if not using Double Q learning, the best action and Q_next is determined by target network 
+
+        q_next = tf.reduce_max(self.target_all_action, axis=1)
+
+        if self.double_q:
+            best_next_action = tf.math.argmax(self.q_all_action, axis=1)
+            best_next_action = tf.one_hot(best_next_action, depth=self.num_actions)
+            q_next = tf.reduce_sum(target_all_action*best_next_action, axis=1)
+
+        target_q_func = gamma*q_next*(1 - self.done_mask_ph) + self.rew_t_ph
         
         # Huber Loss
         # Slice corresponding action in q_all_action
@@ -267,7 +277,7 @@ class DQNAgent(object):
                 })
                 self.session.run(self.update_target_fn)
                 self.model_initialized = True
-
+                
             _, losses = self.session.run([self.train_fn, self.total_error], feed_dict={self.obs_t_ph: obs_t_batch, 
                                                             self.act_t_ph: act_t_batch,
                                                             self.rew_t_ph: rew_t_batch,

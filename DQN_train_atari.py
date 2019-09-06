@@ -14,7 +14,15 @@ from network.body import SmallConvBody
 
 def atari_learn(env,
                 session,
-                num_timesteps):
+                num_timesteps, 
+                replay_buffer_size=1000000,
+                batch_size=32,
+                gamma=0.99,
+                learning_freq=4,
+                frame_history_len=4,
+                target_update_freq=10000,
+                grad_norm_clipping=10,
+                double_q=True):
     # This is just a rough estimate
     num_iterations = float(num_timesteps) / 4.0
 
@@ -51,12 +59,12 @@ def atari_learn(env,
         session=session,
         exploration=exploration_schedule,
         stopping_criterion=stopping_criterion,
-        replay_buffer_size=1000000,
-        batch_size=32,
-        gamma=0.99,
+        replay_buffer_size=replay_buffer_size,
+        batch_size=batch_size,
+        gamma=gamma,
         learning_starts=50000,
-        learning_freq=4,
-        frame_history_len=4,
+        learning_freq=learning_freq,
+        frame_history_len=frame_history_len,
         target_update_freq=10000,
         grad_norm_clipping=10,
         double_q=True
@@ -101,6 +109,19 @@ def get_env(task, seed):
     return env
 
 def main():
+
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('env_name', type=str)
+    parser.add_argument('--replay_buffer_size', type=int, default=1000000)
+    parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument('--gamma', type=int, default=0.99)
+    parser.add_argument('--learning_freq', type=int, default=4)
+    parser.add_argument('--frame_history_len', type=int, default=4)
+    parser.add_argument('--target_update_freq', type=int, default=10000)
+    parser.add_argument("--double_q", type=bool, default=False, help="Activate nice mode.")
+    args = parser.parse_args()
+
     # Get Atari games.
     task = gym.make('PongNoFrameskip-v4')
 
@@ -109,7 +130,13 @@ def main():
     print('random seed = %d' % seed)
     env = get_env(task, seed)
     session = get_session()
-    atari_learn(env, session, num_timesteps=2e8)
+    atari_learn(env, session, num_timesteps=2e8, replay_buffer_size=args.replay_buffer_size,
+                batch_size=args.batch_size,
+                gamma=args.gamma,
+                learning_freq=args.learning_freq,
+                frame_history_len=args.frame_history_len,
+                target_update_freq=args.target_update_freq,
+                double_q=args.double_q)
 
 if __name__ == "__main__":
     main()
