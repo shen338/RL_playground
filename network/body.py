@@ -5,10 +5,10 @@ import numpy as np
 class MLPBody:
     def __init__(self, input_placeholder, output_size, scope, n_layers, size,
                  activation=tf.tanh, output_activation=None,
-                 initializer=tf.contrib.layers.xavier_initializer()):
+                 initializer=tf.contrib.layers.xavier_initializer(), reuse=False):
 
         inputs = input_placeholder
-        with tf.variable_scope(scope):
+        with tf.variable_scope(scope, reuse=True):
             for _ in range(n_layers):
                 inputs = tf.layers.dense(
                     inputs, size, activation=activation, kernel_initializer=initializer, use_bias=True)

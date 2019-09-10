@@ -489,7 +489,7 @@ def PG_train(
         re_n = [path["reward"] for path in paths]
 
         q_n, adv_n = agent.estimate_return(ob_no, re_n)
-        for ii in range(3):
+        for _ in range(3):
             agent.update_parameters(ob_no, ac_na, q_n, adv_n)
 
         # Log diagnostics

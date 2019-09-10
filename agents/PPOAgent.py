@@ -268,7 +268,7 @@ class PPOAgent(object):
 
         while True:
             animate_episode=(len(paths)==0 and (itr % 10 == 0) and self.animate)
-            path = self.sample_traj(env, animate_episode)
+            path = self.sample_traj(env, animate_episode) 
             paths.append(path)
             timesteps_this_batch += len(path["reward"])
             if timesteps_this_batch > self.min_timesteps_per_batch:
