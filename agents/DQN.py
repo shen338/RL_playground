@@ -166,7 +166,7 @@ class DQNAgent(object):
         if self.double_q:
             best_next_action = tf.math.argmax(self.q_all_action, axis=1)
             best_next_action = tf.one_hot(best_next_action, depth=self.num_actions)
-            q_next = tf.reduce_sum(target_all_action*best_next_action, axis=1)
+            q_next = tf.reduce_sum(self.target_all_action*best_next_action, axis=1)
 
         target_q_func = gamma*q_next*(1 - self.done_mask_ph) + self.rew_t_ph
         

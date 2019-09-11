@@ -8,6 +8,7 @@ import time
 import inspect
 import gym
 
+# Twin Delayed DDPG (TD3)
 
 class ReplayBuffer(object):
     # A simple FIFO replay buffer, only need store_batch and sample_batch function 
@@ -40,7 +41,7 @@ class ReplayBuffer(object):
 
 
 def actor_critic(ob, ac, hidden_dim, scope, action_space):
-    # define critic network and actor network for DDPG 
+    # define critic network and actor network for TD3 
     ac_dim = ac.shape.as_list()[-1]
     ac_limit = action_space.high[0]
     with tf.variable_scope(scope):
@@ -48,16 +49,18 @@ def actor_critic(ob, ac, hidden_dim, scope, action_space):
         actor = MLPBody(ob, ac_dim, scope="actor", n_layers=2, size=500, activation=tf.nn.relu, output_activation=tf.nn.tanh)
         sample_a = actor.outputs * ac_limit
 
-        critic = MLPBody(tf.concat([ob, ac], axis=1), 1, scope="critic", n_layers=2, size=500, activation=tf.nn.relu, output_activation=None)
+        critic_1 = MLPBody(tf.concat([ob, ac], axis=1), 1, scope="critic1", n_layers=2, size=500, activation=tf.nn.relu, output_activation=None)
+        critic_2 = MLPBody(tf.concat([ob, ac], axis=1), 1, scope="critic2", n_layers=2, size=500, activation=tf.nn.relu, output_activation=None)
 
-        critic_pi = MLPBody(tf.concat([ob, sample_a], axis=1), 1, scope="critic", n_layers=2, size=500, activation=tf.nn.relu, output_activation=None, reuse=True)
+        critic_pi = MLPBody(tf.concat([ob, sample_a], axis=1), 1, scope="critic1", n_layers=2, size=500, activation=tf.nn.relu, output_activation=None, reuse=True)
 
-    return sample_a, tf.squeeze(critic.outputs, axis=1), tf.squeeze(critic_pi.outputs, axis=1)
+    return sample_a, tf.squeeze(critic_1.outputs, axis=1), tf.squeeze(critic_2.outputs, axis=1), tf.squeeze(critic_pi.outputs, axis=1)
 
-class DDPGAgent(object):
+class TD3Agent(object):
 
     def __init__(self, env, actor_critic=actor_critic, gamma=0.99, 
-         polyak=0.995, actor_lr=1e-3, critic_lr=1e-3, act_noise=0.1):
+         polyak=0.995, actor_lr=1e-3, critic_lr=1e-3, act_noise=0.1, 
+         target_noise=0.2, noise_clip=0.5):
 
         super().__init__()
 
@@ -76,6 +79,8 @@ class DDPGAgent(object):
         self.actor_lr = actor_lr
         self.critic_lr = critic_lr
         self.act_noise = act_noise
+        self.target_noise = target_noise
+        self.noise_clip = noise_clip
 
         self.init_tf_sess()
 
@@ -87,11 +92,6 @@ class DDPGAgent(object):
         self.sess = tf.Session(config=tf_config)
         self.sess.__enter__() # equivalent to `with self.sess:`
         tf.global_variables_initializer().run() #pylint: disable=E1101
-
-    def graph_initialization(self):
-    
-        self.sess.run(tf.global_variables_initializer())
-        self.sess.run(self.target_init)
 
     def define_placeholders(self):
     
@@ -120,20 +120,43 @@ class DDPGAgent(object):
         ac += self.act_noise * np.random.randn(self.ac_dim)
         return np.clip(ac, -self.ac_limit, self.ac_limit)
 
+    def target_smoothing(self, ph_ob_next_no, target_sample_a, hidden_dim=500, scope="target", action_space=None):
+
+        
+        # Target policy smoothing, by adding clipped noise to target actions
+        epsilon = tf.random_normal(tf.shape(target_sample_a), stddev=self.target_noise)
+        epsilon = tf.clip_by_value(epsilon, -self.noise_clip, self.noise_clip)
+        smoothed_ac = target_sample_a + epsilon
+        smoothed_ac = tf.clip_by_value(smoothed_ac, -self.ac_limit, self.ac_limit)
+
+        # put smoothed_ac into network 
+        _, critic_1, critic_2, _ = self.actor_critic(ph_ob_next_no, smoothed_ac, hidden_dim=500, scope=scope, action_space=action_space)
+
+        return critic_1, critic_2
+
+    def graph_initialization(self):
+
+        self.sess.run(tf.global_variables_initializer())
+        self.sess.run(self.target_init)
+
     def build_computation_graph(self):
 
         # get placeholders first 
         self.ph_ob_no, self.ph_ob_next_no, self.ph_ac_na, self.ph_rew_n, self.ph_done_n = self.define_placeholders()
         
         # get critic network and actor network 
-        self.sample_a, critic, critic_pi = actor_critic(self.ph_ob_no, self.ph_ac_na, hidden_dim=500, scope="main", action_space=self.env.action_space)
+        self.sample_a, critic_1, critic_2, critic_pi = actor_critic(self.ph_ob_no, self.ph_ac_na, hidden_dim=500, scope="main", action_space=self.env.action_space)
 
         # get target critic network and actor network 
-        self.target_sample_a, _, target_critic_pi = actor_critic(self.ph_ob_no, self.ph_ac_na, hidden_dim=500, scope="target", action_space=self.env.action_space)
+        self.target_sample_a, _, _, _ = actor_critic(self.ph_ob_no, self.ph_ac_na, hidden_dim=500, scope="target", action_space=self.env.action_space)
 
-        target_q = tf.stop_gradient(self.ph_rew_n + self.gamma*target_critic_pi*(1-self.ph_done_n))
+        target_critic_1, target_critic_2 = self.target_smoothing(self.ph_ob_next_no, self.target_sample_a, hidden_dim=500, scope="target", action_space=self.env.action_space)
 
-        self.critic_loss = tf.losses.mean_squared_error(target_q, critic)
+        target_q = tf.stop_gradient(self.ph_rew_n + self.gamma*tf.minimum(target_critic_1, target_critic_2)*(1-self.ph_done_n))  # use two critic and choose the smaller critic for robustness
+
+        self.critic_loss_1 = tf.losses.mean_squared_error(target_q, critic_1) 
+        self.critic_loss_2 = tf.losses.mean_squared_error(target_q, critic_2) 
+        self.critic_loss = self.critic_loss_1 + self.critic_loss_2
 
         self.actor_loss = tf.reduce_mean(critic_pi) 
 
@@ -169,8 +192,8 @@ class DDPGAgent(object):
 
         return critic_loss                                            
 
-def DDPG_train(env, logdir='.', actor_critic=actor_critic, iterations=600000, replay_size=int(1e6), gamma=0.99, 
-         polyak=0.995, actor_lr=1e-3, critic_lr=1e-3, batch_size=100, start_steps=10000, act_noise=0.1):
+def TD3_train(env, logdir='.', actor_critic=actor_critic, iterations=600000, replay_size=int(1e6), gamma=0.99, 
+         polyak=0.995, actor_lr=1e-3, critic_lr=1e-3, batch_size=100, start_steps=10000, act_noise=0.1, target_noise=0.2, noise_clip=0.5, policy_delay=4):
 
     # Configure output directory for logging
     logz.configure_output_dir(logdir)
@@ -181,11 +204,11 @@ def DDPG_train(env, logdir='.', actor_critic=actor_critic, iterations=600000, re
     print(params)
     logz.save_params(params)
     
-    ddpg = DDPGAgent(env, actor_critic, gamma, polyak, actor_lr, critic_lr, act_noise)
+    td3 = TD3Agent(env, actor_critic, gamma, polyak, actor_lr, critic_lr, act_noise)
 
-    ddpg.build_computation_graph()
-    ddpg.init_tf_sess()
-    ddpg.graph_initialization()  # Build and initialize computation graph
+    td3.build_computation_graph()
+    td3.init_tf_sess()
+    td3.graph_initialization()
 
     ob_dim = env.observation_space.shape[0]
     ac_dim = env.action_space.shape[0]
@@ -203,7 +226,7 @@ def DDPG_train(env, logdir='.', actor_critic=actor_critic, iterations=600000, re
         if ii < start_steps: 
             ac = env.action_space.sample()
         else:
-            ac = ddpg.sample_action(ob)
+            ac = td3.sample_action(ob)
 
         ob_next, rew, done = env.step(ac)
 
@@ -216,16 +239,17 @@ def DDPG_train(env, logdir='.', actor_critic=actor_critic, iterations=600000, re
         if ii < start_steps: 
             continue
 
-        # DDPG update 
         batch = replay_buffer.sample_batch(batch_size=batch_size)
 
         # update critic 
-        a_loss = ddpg.update_critic(batch['obs1'], batch['obs2'], batch['acts'], batch['rews'], batch['done'])
+        a_loss = td3.update_critic(batch['obs1'], batch['obs2'], batch['acts'], batch['rews'], batch['done'])
         actor_loss.append(a_loss)
 
-        # update actor and target
-        c_loss = ddpg.update_actor_and_target(batch['obs1'], batch['obs2'], batch['acts'], batch['rews'], batch['done'])
-        critic_loss.append(c_loss)
+        if ii % policy_delay == 0:  # Delayed actor update and target update 
+
+            # update actor and target
+            c_loss = td3.update_actor_and_target(batch['obs1'], batch['obs2'], batch['acts'], batch['rews'], batch['done'])
+            critic_loss.append(c_loss)
 
         if ii % 10000 == 0: 
             logz.log_tabular("Time", time.time() - start_time)
